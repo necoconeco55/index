@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>CASIO Product Authentication (Pseudo Signature)</title>
+<title>CASIO Product Authentication (Improved PoC)</title>
 
 <style>
 body {
@@ -85,7 +85,7 @@ body {
 const statusDiv = document.getElementById("status");
 const resultDiv = document.getElementById("result");
 
-// ===== 疑似秘密鍵 =====
+// ===== 疑似秘密鍵（PoC用）=====
 const SECRET = "CASIO_SECRET_KEY";
 
 // ===== 簡易ハッシュ =====
@@ -104,6 +104,15 @@ function verifySignature(productId, signature) {
     return expected === signature;
 }
 
+// ===== モッククラウド照合 =====
+function verifyWithCloud(id, sig) {
+    return new Promise(resolve => {
+        setTimeout(() => {
+            resolve(verifySignature(id, sig));
+        }, 400);
+    });
+}
+
 // ===== NFCスキャン =====
 async function startScan() {
 
@@ -118,34 +127,38 @@ async function startScan() {
 
         statusDiv.innerHTML = "スキャン待機中...";
 
-        ndef.onreading = (event) => {
+        ndef.onreading = async (event) => {
 
             let productId = "";
             let signature = "";
 
-            for (const record of event.message.records) {
-                const text = new TextDecoder().decode(record.data);
+            try {
+                for (const record of event.message.records) {
+                    const text = new TextDecoder().decode(record.data);
 
-                // データ解析
-                if (text.startsWith("ID:")) {
-                    productId = text.replace("ID:", "");
+                    // JSON形式を想定
+                    const obj = JSON.parse(text);
+                    productId = obj.id;
+                    signature = obj.sig;
                 }
-                if (text.startsWith("SIG:")) {
-                    signature = text.replace("SIG:", "");
-                }
+            } catch (e) {
+                showError("データ形式エラー");
+                return;
             }
 
-            statusDiv.innerHTML = "照合中...";
+            statusDiv.innerHTML = "クラウド照合中...";
 
-            setTimeout(() => {
+            const isValid = await verifyWithCloud(productId, signature);
 
-                if (verifySignature(productId, signature)) {
-                    showSuccess(event.serialNumber, productId);
-                } else {
-                    showFake(event.serialNumber, productId);
-                }
+            if (isValid) {
+                showSuccess(event.serialNumber, productId);
+            } else {
+                showFake(event.serialNumber, productId);
+            }
+        };
 
-            }, 500);
+        ndef.onreadingerror = () => {
+            statusDiv.innerHTML = "読み取り失敗。再度かざしてください";
         };
 
     } catch (e) {
@@ -164,11 +177,12 @@ function showSuccess(uid, id) {
         <center><strong>✅ AUTHENTIC PRODUCT</strong></center><hr>
 
         <b>Product ID:</b> ${id}<br>
-        <b>UID:</b> ${uid}<br><br>
+        <b>UID:</b> ${uid}（参考情報）<br><br>
 
         <b>検証結果</b><br>
-        ・個体ID一致<br>
-        ・疑似署名検証OK<br><br>
+        ・個体データ一致<br>
+        ・識別ロジック検証OK<br>
+        ・クラウド照合OK<br><br>
 
         <b>ビジネス効果</b><br>
         ・模倣品排除<br>
@@ -185,17 +199,24 @@ function showFake(uid, id) {
     resultDiv.style.display = "block";
 
     resultDiv.innerHTML = `
-        <center><strong>❌ FAKE / WARNING</strong></center><hr>
+        <center><strong>❌ WARNING</strong></center><hr>
 
         <b>Product ID:</b> ${id || "不明"}<br>
-        <b>UID:</b> ${uid}<br><br>
+        <b>UID:</b> ${uid}（参考情報）<br><br>
 
         <b>異常内容</b><br>
-        ・署名不一致<br>
+        ・識別データ不一致<br>
         ・未登録または改ざんの可能性<br><br>
 
         ⚠️ 不正流通の疑い
     `;
+}
+
+// ===== エラー =====
+function showError(msg) {
+    resultDiv.className = "result fail";
+    resultDiv.style.display = "block";
+    resultDiv.innerHTML = "⚠️ " + msg;
 }
 
 // ===== 攻撃シナリオ =====
@@ -206,14 +227,20 @@ async function attackWrite() {
 
         statusDiv.innerHTML = "攻撃者が偽造データを書き込み中...";
 
-        await ndef.write("ID:99999|SIG:000000");
+        // JSON形式で偽造
+        const fakeData = JSON.stringify({
+            id: "99999",
+            sig: "000000"
+        });
+
+        await ndef.write(fakeData);
 
         resultDiv.className = "result fail";
         resultDiv.style.display = "block";
 
         resultDiv.innerHTML = `
-            ⚠️ 書き込み成功<br>
-            → 偽造タグ作成が可能な状態
+            ⚠️ 書き込み成功<br><br>
+            → 正規品と見分けがつかない偽造タグを生成可能
         `;
 
     } catch (e) {
