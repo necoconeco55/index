@@ -3,11 +3,11 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>CASIO Product Authentication (Improved PoC)</title>
+<title>CASIO Product Authentication - Final PoC</title>
 
 <style>
 body {
-    font-family: "Helvetica Neue", Arial, sans-serif;
+    font-family: Arial, sans-serif;
     background: #f0f2f5;
     text-align: center;
     padding: 20px;
@@ -15,20 +15,14 @@ body {
 .container {
     background: white;
     border-radius: 12px;
-    padding: 30px 20px;
-    box-shadow: 0 15px 35px rgba(0,0,0,0.15);
-    max-width: 400px;
+    padding: 25px;
+    max-width: 420px;
     margin: auto;
-    border-top: 5px solid #000;
-}
-.logo {
-    font-size: 1.4rem;
-    font-weight: bold;
-    margin-bottom: 20px;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.15);
 }
 .btn {
     width: 100%;
-    padding: 15px;
+    padding: 14px;
     margin: 10px 0;
     border: none;
     border-radius: 6px;
@@ -36,7 +30,7 @@ body {
     font-weight: bold;
 }
 .verify { background: #000; }
-.attack { background: #d00000; font-size: 0.85rem; margin-top: 25px; }
+.attack { background: #c00; font-size: 0.85rem; }
 
 .result {
     margin-top: 20px;
@@ -45,50 +39,42 @@ body {
     display: none;
     text-align: left;
 }
-.success { background: #f0fff4; border: 1px solid #c6f6d5; }
-.fail { background: #fff5f5; border: 1px solid #fed7d7; }
+.success { background: #e6fffa; }
+.fail { background: #fff5f5; }
 
-.small {
-    margin-top: 20px;
-    font-size: 0.75rem;
-    color: #999;
-}
+.small { font-size: 0.75rem; color: gray; margin-top: 15px; }
 </style>
 </head>
 
 <body>
 
 <div class="container">
-    <div class="logo">CASIO Genuine Verification</div>
+    <h3>CASIO Genuine Verification</h3>
 
-    <div id="status">
-        「真贋検証を開始」を押してタグをスキャン
-    </div>
+    <div id="status">「検証開始」を押してタグをスキャン</div>
 
-    <button class="btn verify" onclick="startScan()">
-        真贋検証を開始
-    </button>
-
-    <button class="btn attack" onclick="attackWrite()">
-        【デモ】攻撃者による改ざん試行
-    </button>
+    <button class="btn verify" onclick="startScan()">真贋検証</button>
+    <button class="btn attack" onclick="attackWrite()">攻撃シナリオ</button>
 
     <div id="result" class="result"></div>
 </div>
 
 <div class="small">
-※Android Chrome NFC対応端末専用<br>
-※UIDは補助情報です
+※Android Chrome NFC対応<br>
+※UIDは補助情報
 </div>
 
 <script>
 const statusDiv = document.getElementById("status");
 const resultDiv = document.getElementById("result");
 
+let scanning = false;
+let timeoutId = null;
+
 // ===== 疑似秘密鍵（PoC用）=====
 const SECRET = "CASIO_SECRET_KEY";
 
-// ===== 簡易ハッシュ =====
+// ===== ハッシュ =====
 function simpleHash(str) {
     let hash = 0;
     for (let i = 0; i < str.length; i++) {
@@ -98,26 +84,27 @@ function simpleHash(str) {
     return hash.toString();
 }
 
-// ===== 疑似署名検証 =====
-function verifySignature(productId, signature) {
-    const expected = simpleHash(productId + SECRET);
-    return expected === signature;
+// ===== 検証 =====
+function verifySignature(id, uid, sig) {
+    const expected = simpleHash(id + uid + SECRET);
+    return expected === sig;
 }
 
-// ===== モッククラウド照合 =====
-function verifyWithCloud(id, sig) {
-    return new Promise(resolve => {
-        setTimeout(() => {
-            resolve(verifySignature(id, sig));
-        }, 400);
-    });
+// ===== モッククラウド =====
+async function verifyWithCloud(id, uid, sig) {
+    await new Promise(r => setTimeout(r, 300));
+    return verifySignature(id, uid, sig);
 }
 
-// ===== NFCスキャン =====
+// ===== スキャン =====
 async function startScan() {
 
+    if (scanning) return;
+    scanning = true;
+
     if (!("NDEFReader" in window)) {
-        alert("Web NFC非対応です（Android Chrome）");
+        alert("Web NFC非対応（Android Chrome）");
+        scanning = false;
         return;
     }
 
@@ -127,86 +114,108 @@ async function startScan() {
 
         statusDiv.innerHTML = "スキャン待機中...";
 
+        // タイムアウト
+        timeoutId = setTimeout(() => {
+            statusDiv.innerHTML = "タグを検出できませんでした";
+            scanning = false;
+        }, 10000);
+
         ndef.onreading = async (event) => {
+
+            clearTimeout(timeoutId);
 
             let productId = "";
             let signature = "";
+            let found = false;
 
-            try {
-                for (const record of event.message.records) {
+            for (const record of event.message.records) {
+
+                if (record.recordType !== "mime") continue;
+                if (record.mediaType !== "application/json") continue;
+
+                try {
                     const text = new TextDecoder().decode(record.data);
-
-                    // JSON形式を想定
                     const obj = JSON.parse(text);
-                    productId = obj.id;
-                    signature = obj.sig;
-                }
-            } catch (e) {
-                showError("データ形式エラー");
+
+                    if (obj.id && obj.sig) {
+                        productId = obj.id;
+                        signature = obj.sig;
+                        found = true;
+                        break;
+                    }
+                } catch {}
+            }
+
+            if (!found) {
+                showError("有効なデータが見つかりません");
+                scanning = false;
                 return;
             }
 
             statusDiv.innerHTML = "クラウド照合中...";
 
-            const isValid = await verifyWithCloud(productId, signature);
+            const ok = await verifyWithCloud(productId, event.serialNumber || "", signature);
 
-            if (isValid) {
+            if (ok) {
                 showSuccess(event.serialNumber, productId);
             } else {
                 showFake(event.serialNumber, productId);
             }
+
+            scanning = false;
         };
 
         ndef.onreadingerror = () => {
-            statusDiv.innerHTML = "読み取り失敗。再度かざしてください";
+            showError("読み取り失敗。再度かざしてください");
+            scanning = false;
         };
 
     } catch (e) {
-        statusDiv.innerText = "エラー：" + e;
+        console.error(e);
+        showError("スキャンエラーが発生しました");
+        scanning = false;
     }
 }
 
 // ===== 成功 =====
 function showSuccess(uid, id) {
-    statusDiv.innerHTML = "検証完了";
+    statusDiv.innerHTML = "検証完了（再スキャン可能）";
 
     resultDiv.className = "result success";
     resultDiv.style.display = "block";
 
     resultDiv.innerHTML = `
-        <center><strong>✅ AUTHENTIC PRODUCT</strong></center><hr>
+        <b>✅ AUTHENTIC PRODUCT</b><hr>
+        Product ID: ${id}<br>
+        UID: ${uid || "取得不可"}（参考情報）<br><br>
 
-        <b>Product ID:</b> ${id}<br>
-        <b>UID:</b> ${uid}（参考情報）<br><br>
-
-        <b>検証結果</b><br>
-        ・個体データ一致<br>
-        ・識別ロジック検証OK<br>
+        ・識別データ一致<br>
+        ・疑似署名検証OK<br>
         ・クラウド照合OK<br><br>
 
         <b>ビジネス効果</b><br>
         ・模倣品排除<br>
         ・ブランド保護<br>
-        ・流通可視化
+        ・流通可視化<br><br>
+
+        <small>※本デモは簡易ロジック。本番は公開鍵暗号へ移行</small>
     `;
 }
 
 // ===== 偽物 =====
 function showFake(uid, id) {
-    statusDiv.innerHTML = "検証完了";
+    statusDiv.innerHTML = "検証完了（再スキャン可能）";
 
     resultDiv.className = "result fail";
     resultDiv.style.display = "block";
 
     resultDiv.innerHTML = `
-        <center><strong>❌ WARNING</strong></center><hr>
+        <b>❌ WARNING</b><hr>
+        Product ID: ${id || "不明"}<br>
+        UID: ${uid || "取得不可"}（参考情報）<br><br>
 
-        <b>Product ID:</b> ${id || "不明"}<br>
-        <b>UID:</b> ${uid}（参考情報）<br><br>
-
-        <b>異常内容</b><br>
-        ・識別データ不一致<br>
-        ・未登録または改ざんの可能性<br><br>
+        ・署名不一致<br>
+        ・改ざんまたは未登録<br><br>
 
         ⚠️ 不正流通の疑い
     `;
@@ -219,35 +228,35 @@ function showError(msg) {
     resultDiv.innerHTML = "⚠️ " + msg;
 }
 
-// ===== 攻撃シナリオ =====
+// ===== 攻撃 =====
 async function attackWrite() {
 
     try {
         const ndef = new NDEFReader();
 
-        statusDiv.innerHTML = "攻撃者が偽造データを書き込み中...";
+        statusDiv.innerHTML = "攻撃者が偽造タグ作成中...";
 
-        // JSON形式で偽造
-        const fakeData = JSON.stringify({
-            id: "99999",
-            sig: "000000"
+        const fake = JSON.stringify({ id: "99999", sig: "000000" });
+
+        await ndef.write({
+            records: [{
+                recordType: "mime",
+                mediaType: "application/json",
+                data: new TextEncoder().encode(fake)
+            }]
         });
-
-        await ndef.write(fakeData);
 
         resultDiv.className = "result fail";
         resultDiv.style.display = "block";
-
         resultDiv.innerHTML = `
             ⚠️ 書き込み成功<br><br>
-            → 正規品と見分けがつかない偽造タグを生成可能
+            → 正規品と見分けがつかない偽造タグ生成が可能
         `;
 
     } catch (e) {
 
         resultDiv.className = "result success";
         resultDiv.style.display = "block";
-
         resultDiv.innerHTML = `
             🛡️ 改ざんブロック成功<br><br>
             書き込みが拒否されました（タグ設定による）
