@@ -3,52 +3,55 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>RYOSAN NFC True Authentication Demo</title>
+<title>CASIO Product Authentication (Pseudo Signature)</title>
 
 <style>
 body {
-    font-family: -apple-system, sans-serif;
-    background: #f4f7f9;
+    font-family: "Helvetica Neue", Arial, sans-serif;
+    background: #f0f2f5;
     text-align: center;
     padding: 20px;
 }
 .container {
     background: white;
-    border-radius: 15px;
-    padding: 25px;
-    box-shadow: 0 10px 25px rgba(0,0,0,0.1);
-    max-width: 420px;
+    border-radius: 12px;
+    padding: 30px 20px;
+    box-shadow: 0 15px 35px rgba(0,0,0,0.15);
+    max-width: 400px;
     margin: auto;
+    border-top: 5px solid #000;
 }
 .logo {
+    font-size: 1.4rem;
     font-weight: bold;
-    color: #003366;
-    margin-bottom: 15px;
+    margin-bottom: 20px;
 }
 .btn {
     width: 100%;
-    padding: 14px;
-    margin: 8px 0;
+    padding: 15px;
+    margin: 10px 0;
     border: none;
-    border-radius: 8px;
+    border-radius: 6px;
     color: white;
-    cursor: pointer;
+    font-weight: bold;
 }
-.verify { background: #003366; }
-.attack { background: #cc0000; }
+.verify { background: #000; }
+.attack { background: #d00000; font-size: 0.85rem; margin-top: 25px; }
 
 .result {
     margin-top: 20px;
     padding: 15px;
     border-radius: 8px;
     display: none;
+    text-align: left;
 }
-.success { background: #e6fffa; }
-.fail { background: #fff5f5; }
+.success { background: #f0fff4; border: 1px solid #c6f6d5; }
+.fail { background: #fff5f5; border: 1px solid #fed7d7; }
 
 .small {
-    font-size: 0.8rem;
-    color: gray;
+    margin-top: 20px;
+    font-size: 0.75rem;
+    color: #999;
 }
 </style>
 </head>
@@ -56,39 +59,56 @@ body {
 <body>
 
 <div class="container">
-    <div class="logo">RYOSAN NFC Authentication PoC</div>
+    <div class="logo">CASIO Genuine Verification</div>
 
     <div id="status">
-        「検証開始」を押してタグをスキャン
+        「真贋検証を開始」を押してタグをスキャン
     </div>
 
     <button class="btn verify" onclick="startScan()">
-        正規アプリ（真贋検証）
+        真贋検証を開始
     </button>
 
     <button class="btn attack" onclick="attackWrite()">
-        攻撃者シナリオ（書き換え試行）
+        【デモ】攻撃者による改ざん試行
     </button>
 
     <div id="result" class="result"></div>
 </div>
 
 <div class="small">
-※Android Chromeのみ対応 / iOSは専用アプリ対応想定
+※Android Chrome NFC対応端末専用<br>
+※UIDは補助情報です
 </div>
 
 <script>
 const statusDiv = document.getElementById("status");
 const resultDiv = document.getElementById("result");
 
-// ===== 擬似クラウドDB =====
-const VALID_SIGNATURE = "CASIO_SECURE_SIGNATURE_123";
+// ===== 疑似秘密鍵 =====
+const SECRET = "CASIO_SECRET_KEY";
 
-// ===== スキャン処理 =====
+// ===== 簡易ハッシュ =====
+function simpleHash(str) {
+    let hash = 0;
+    for (let i = 0; i < str.length; i++) {
+        hash = (hash << 5) - hash + str.charCodeAt(i);
+        hash |= 0;
+    }
+    return hash.toString();
+}
+
+// ===== 疑似署名検証 =====
+function verifySignature(productId, signature) {
+    const expected = simpleHash(productId + SECRET);
+    return expected === signature;
+}
+
+// ===== NFCスキャン =====
 async function startScan() {
 
     if (!("NDEFReader" in window)) {
-        alert("Web NFC非対応です（Android Chromeのみ）");
+        alert("Web NFC非対応です（Android Chrome）");
         return;
     }
 
@@ -98,80 +118,83 @@ async function startScan() {
 
         statusDiv.innerHTML = "スキャン待機中...";
 
-        ndef.addEventListener("reading", async ({ message, serialNumber }) => {
+        ndef.onreading = (event) => {
 
-            let dataText = "";
+            let productId = "";
+            let signature = "";
 
-            for (const record of message.records) {
-                const decoder = new TextDecoder();
-                dataText = decoder.decode(record.data);
+            for (const record of event.message.records) {
+                const text = new TextDecoder().decode(record.data);
+
+                // データ解析
+                if (text.startsWith("ID:")) {
+                    productId = text.replace("ID:", "");
+                }
+                if (text.startsWith("SIG:")) {
+                    signature = text.replace("SIG:", "");
+                }
             }
 
-            // ===== 擬似クラウド照合 =====
-            const isAuthentic = await verifyWithCloud(serialNumber, dataText);
+            statusDiv.innerHTML = "照合中...";
 
-            if (isAuthentic) {
-                showSuccess(serialNumber);
-            } else {
-                showFake(serialNumber);
-            }
-        });
+            setTimeout(() => {
+
+                if (verifySignature(productId, signature)) {
+                    showSuccess(event.serialNumber, productId);
+                } else {
+                    showFake(event.serialNumber, productId);
+                }
+
+            }, 500);
+        };
 
     } catch (e) {
         statusDiv.innerText = "エラー：" + e;
     }
 }
 
-// ===== クラウド照合（モック） =====
-function verifyWithCloud(uid, data) {
-    return new Promise(resolve => {
-
-        setTimeout(() => {
-            if (data === VALID_SIGNATURE) {
-                resolve(true);
-            } else {
-                resolve(false);
-            }
-        }, 500);
-    });
-}
-
-// ===== 成功表示 =====
-function showSuccess(uid) {
+// ===== 成功 =====
+function showSuccess(uid, id) {
     statusDiv.innerHTML = "検証完了";
 
     resultDiv.className = "result success";
     resultDiv.style.display = "block";
 
     resultDiv.innerHTML = `
-        <strong>✅ AUTHENTIC PRODUCT</strong><br>
-        UID: ${uid}<br><br>
+        <center><strong>✅ AUTHENTIC PRODUCT</strong></center><hr>
+
+        <b>Product ID:</b> ${id}<br>
+        <b>UID:</b> ${uid}<br><br>
 
         <b>検証結果</b><br>
-        ・メーカー署名一致<br>
-        ・クラウド照合OK<br><br>
+        ・個体ID一致<br>
+        ・疑似署名検証OK<br><br>
 
-        <b>トレーサビリティ</b><br>
-        Manufacturing → Distribution → Scan → Verified
+        <b>ビジネス効果</b><br>
+        ・模倣品排除<br>
+        ・ブランド保護<br>
+        ・流通可視化
     `;
 }
 
-// ===== 偽物表示 =====
-function showFake(uid) {
+// ===== 偽物 =====
+function showFake(uid, id) {
     statusDiv.innerHTML = "検証完了";
 
     resultDiv.className = "result fail";
     resultDiv.style.display = "block";
 
     resultDiv.innerHTML = `
-        <strong>❌ FAKE / UNAUTHORIZED</strong><br>
-        UID: ${uid}<br><br>
+        <center><strong>❌ FAKE / WARNING</strong></center><hr>
 
-        <b>異常検知</b><br>
+        <b>Product ID:</b> ${id || "不明"}<br>
+        <b>UID:</b> ${uid}<br><br>
+
+        <b>異常内容</b><br>
         ・署名不一致<br>
-        ・未登録タグ<br><br>
+        ・未登録または改ざんの可能性<br><br>
 
-        ⚠️ 不正流通の可能性あり
+        ⚠️ 不正流通の疑い
     `;
 }
 
@@ -181,16 +204,16 @@ async function attackWrite() {
     try {
         const ndef = new NDEFReader();
 
-        statusDiv.innerHTML = "攻撃者が書き換え試行中...";
+        statusDiv.innerHTML = "攻撃者が偽造データを書き込み中...";
 
-        await ndef.write("FAKE_DATA_ATTACK");
+        await ndef.write("ID:99999|SIG:000000");
 
         resultDiv.className = "result fail";
         resultDiv.style.display = "block";
 
         resultDiv.innerHTML = `
             ⚠️ 書き込み成功<br>
-            → セキュリティ未設定タグ
+            → 偽造タグ作成が可能な状態
         `;
 
     } catch (e) {
@@ -199,10 +222,11 @@ async function attackWrite() {
         resultDiv.style.display = "block";
 
         resultDiv.innerHTML = `
-            ✅ 攻撃ブロック成功<br><br>
-            タグが保護されているため<br>
-            不正書き換え不可
+            🛡️ 改ざんブロック成功<br><br>
+            書き込みが拒否されました（タグ設定による）
         `;
+
+        statusDiv.innerHTML = "防御成功";
     }
 }
 </script>
