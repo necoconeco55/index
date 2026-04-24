@@ -96,6 +96,33 @@ async function verifyWithCloud(id, uid, sig) {
     return verifySignature(id, uid, sig);
 }
 
+// ===== レコードからJSONを抽出（mime と text 両対応）=====
+function extractJSON(records) {
+    for (const record of records) {
+        // mime / application/json
+        if (record.recordType === "mime" && record.mediaType === "application/json") {
+            try {
+                const text = new TextDecoder().decode(record.data);
+                const obj = JSON.parse(text);
+                if (obj.id && obj.sig) return obj;
+            } catch {}
+        }
+        // text レコード（NFC Tools「テキスト文字」で書き込んだ場合）
+        if (record.recordType === "text") {
+            try {
+                const text = new TextDecoder().decode(record.data);
+                // 先頭の言語コードバイトをスキップしてJSONを探す
+                const jsonStart = text.indexOf("{");
+                if (jsonStart !== -1) {
+                    const obj = JSON.parse(text.slice(jsonStart));
+                    if (obj.id && obj.sig) return obj;
+                }
+            } catch {}
+        }
+    }
+    return null;
+}
+
 // ===== スキャン =====
 async function startScan() {
 
@@ -124,29 +151,9 @@ async function startScan() {
 
             clearTimeout(timeoutId);
 
-            let productId = "";
-            let signature = "";
-            let found = false;
+            const obj = extractJSON(event.message.records);
 
-            for (const record of event.message.records) {
-
-                if (record.recordType !== "mime") continue;
-                if (record.mediaType !== "application/json") continue;
-
-                try {
-                    const text = new TextDecoder().decode(record.data);
-                    const obj = JSON.parse(text);
-
-                    if (obj.id && obj.sig) {
-                        productId = obj.id;
-                        signature = obj.sig;
-                        found = true;
-                        break;
-                    }
-                } catch {}
-            }
-
-            if (!found) {
+            if (!obj) {
                 showError("有効なデータが見つかりません");
                 scanning = false;
                 return;
@@ -154,12 +161,12 @@ async function startScan() {
 
             statusDiv.innerHTML = "クラウド照合中...";
 
-            const ok = await verifyWithCloud(productId, event.serialNumber || "", signature);
+            const ok = await verifyWithCloud(obj.id, event.serialNumber || "", obj.sig);
 
             if (ok) {
-                showSuccess(event.serialNumber, productId);
+                showSuccess(event.serialNumber, obj.id);
             } else {
-                showFake(event.serialNumber, productId);
+                showFake(event.serialNumber, obj.id);
             }
 
             scanning = false;
